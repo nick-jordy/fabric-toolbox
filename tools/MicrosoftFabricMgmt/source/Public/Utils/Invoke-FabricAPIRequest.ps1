@@ -144,7 +144,13 @@ function Invoke-FabricAPIRequest {
 
                     # Check for Retry-After header
                     $retryAfterSeconds = if ($responseHeader -and $responseHeader['Retry-After']) {
-                        [int]$responseHeader['Retry-After']
+                        $retryAfterValue = $responseHeader['Retry-After']
+                        # Handle case where Retry-After might be an array
+                        if ($retryAfterValue -is [array]) {
+                            [int]$retryAfterValue[0]
+                        } else {
+                            [int]$retryAfterValue
+                        }
                     } else {
                         # Calculate exponential backoff with jitter
                         $baseDelay = [Math]::Pow($RetryBackoffMultiplier, $retryCount)
@@ -175,8 +181,10 @@ function Invoke-FabricAPIRequest {
                         $items = @()
                         switch ($true) {
                             { $propertyNames -contains 'value' } { $items = $response.value; break }
+                            { $propertyNames -contains 'itemEntities' } { $items = $response.itemEntities; break }
                             { $propertyNames -contains 'accessEntities' } { $items = $response.accessEntities; break }
                             { $propertyNames -contains 'domains' } { $items = $response.domains; break }
+                            { $propertyNames -contains 'workspaces' } { $items = $response.workspaces; break }
                             { $propertyNames -contains 'publishDetails' } { $items = $response.publishDetails; break }
                             { $propertyNames -contains 'definition' } { $items = $response.definition.parts; break }
                             { $propertyNames -contains 'data' } { $items = $response.data; break }
@@ -289,6 +297,16 @@ function Invoke-FabricAPIRequest {
                             $errorParts += $response.message
                         }
 
+                        # Include specific messages from moreDetails if present - these are
+                        # typically more actionable than the generic top-level message
+                        if ($response.moreDetails) {
+                            foreach ($detail in $response.moreDetails) {
+                                if ($detail.message) {
+                                    $errorParts += $detail.message
+                                }
+                            }
+                        }
+
                         if ($response.requestId) {
                             $errorParts += "RequestId: $($response.requestId)"
                         }
@@ -312,6 +330,9 @@ function Invoke-FabricAPIRequest {
                     }
                 }
 
+                # Store the structured response so callers can access moreDetails etc.
+                # in their catch blocks via $script:FabricLastAPIError (PS7 has no ErrorDetails.Message)
+                $script:FabricLastAPIError = $response
                 throw "API request failed with status code $statusCode ($errorMsg). $errorDetails"
             }
 
@@ -320,7 +341,9 @@ function Invoke-FabricAPIRequest {
         return , $results.ToArray()
     }
     catch {
-        Write-FabricLog -Message "Invoke Fabric API error. Error: $($_.Exception.Message)" -Level Error
+        # Log at Debug since this rethrows - the calling function is responsible for
+        # user-visible error messages, avoiding duplicate Warning/Error output.
+        Write-FabricLog -Message "Invoke Fabric API error. Error: $($_.Exception.Message)" -Level Debug
         throw
     }
 }
